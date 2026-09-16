@@ -6,6 +6,7 @@ import logger from './utils/logger.js';
 import { AppError, ERROR_CODES, createApiResponse, createErrorResponse } from './utils/errors.js';
 import { rateLimiterMiddleware } from './utils/rate-limit.js';
 import { initSocket } from './socket/index.js';
+import roomRoutes from './routes/room.routes.js';
 
 const app = express();
 
@@ -25,6 +26,9 @@ app.get('/api/health', (req, res) => {
     service: 'syncwatch-server'
   }));
 });
+
+// Room REST Routes
+app.use('/api/rooms', roomRoutes);
 
 // 404 Route Handler
 app.use((req, res, next) => {
@@ -53,9 +57,15 @@ app.use((err, req, res, next) => {
 const httpServer = http.createServer(app);
 const io = initSocket(httpServer);
 
-// Start server if not running in test runner
+// Start server if not running in test mode
+const isTestMode = config.NODE_ENV === 'test' ||
+  process.env.NODE_ENV === 'test' ||
+  process.env.SYNCWATCH_TEST_MODE === 'true' ||
+  process.execArgv.includes('--test') ||
+  process.argv.some((arg) => typeof arg === 'string' && (arg.includes('--test') || arg.includes('test')));
+
 let serverInstance = null;
-if (process.env.NODE_ENV !== 'test') {
+if (!isTestMode) {
   serverInstance = httpServer.listen(config.PORT, () => {
     logger.info(`SyncWatch Backend running on port ${config.PORT} [${config.NODE_ENV}]`);
   });
