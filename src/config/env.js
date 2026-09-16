@@ -3,6 +3,16 @@ import { z } from 'zod';
 
 dotenv.config();
 
+// If process was executed via node --test or npm test, enforce NODE_ENV = 'test'
+if (
+  process.env.NODE_ENV === 'test' ||
+  process.env.SYNCWATCH_TEST_MODE === 'true' ||
+  process.execArgv.includes('--test') ||
+  process.argv.some((arg) => typeof arg === 'string' && (arg.includes('--test') || arg.includes('test')))
+) {
+  process.env.NODE_ENV = 'test';
+}
+
 const envSchema = z.object({
   PORT: z.coerce.number().default(5000),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -12,7 +22,12 @@ const envSchema = z.object({
   RATE_LIMIT_MAX_REQUESTS: z.coerce.number().default(100)
 });
 
-const parsed = envSchema.safeParse(process.env);
+const envToValidate = {
+  ...process.env,
+  NODE_ENV: process.env.NODE_ENV || 'development'
+};
+
+const parsed = envSchema.safeParse(envToValidate);
 
 if (!parsed.success) {
   console.error('Invalid environment variables:', parsed.error.format());

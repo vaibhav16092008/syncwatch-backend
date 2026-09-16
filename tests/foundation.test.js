@@ -1,3 +1,6 @@
+process.env.NODE_ENV = 'test';
+process.env.SYNCWATCH_TEST_MODE = 'true';
+
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import request from 'supertest';
@@ -10,18 +13,17 @@ import { InMemoryRateLimiter } from '../src/utils/rate-limit.js';
 import { RoomStorage } from '../src/storage/room.storage.js';
 
 describe('Phase B1 — SyncWatch Backend Foundation Tests', () => {
-  let server;
   let port;
 
-  before((done) => {
-    server = httpServer.listen(0, () => {
-      port = server.address().port;
-      done();
-    });
+  before(async () => {
+    if (!httpServer.listening) {
+      await new Promise((resolve) => httpServer.listen(0, resolve));
+    }
+    port = httpServer.address().port;
   });
 
-  after((done) => {
-    server.close(done);
+  after(async () => {
+    // Keep server active for subsequent test files sharing singleton httpServer
   });
 
   describe('1. Environment Configuration', () => {
@@ -141,16 +143,18 @@ describe('Phase B1 — SyncWatch Backend Foundation Tests', () => {
   });
 
   describe('7. Socket.io Foundation', () => {
-    it('allows client to connect and disconnect cleanly', (done) => {
+    it('allows client to connect and disconnect cleanly', async () => {
       const clientSocket = ioClient(`http://localhost:${port}`, {
         transports: ['websocket'],
         forceNew: true
       });
 
-      clientSocket.on('connect', () => {
-        assert.ok(clientSocket.id);
-        clientSocket.disconnect();
-        done();
+      await new Promise((resolve) => {
+        clientSocket.on('connect', () => {
+          assert.ok(clientSocket.id);
+          clientSocket.disconnect();
+          resolve();
+        });
       });
     });
   });
