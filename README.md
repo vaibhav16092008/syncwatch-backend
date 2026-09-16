@@ -5,7 +5,7 @@ SyncWatch is a private real-time watch-party web application enabling users to c
 ## Current Phase
 
 ```text
-Phase B2 — Room Management
+Phase B3 — Media + Synchronization
 ```
 
 ## Tech Stack
@@ -20,7 +20,7 @@ Phase B2 — Room Management
 
 > **Storage Architecture**: SyncWatch currently uses in-memory storage (`RoomStorage`) behind an abstraction layer and intentionally does not use a database or external cache like Redis. Room state is stored in memory and cleared on server restart.
 
-> **Media & WebRTC Architecture**: Local video files are designed to be streamed directly between browsers using `captureStream()` and WebRTC. The backend only provides Socket.io signaling and will never receive, process, store, or stream actual video bytes.
+> **Media & Synchronization Architecture**: Media state is server-authoritative and room-scoped. Playing media position is dynamically calculated from server time anchors (`updatedAt`) and playback rate (`playbackRate`). Local video files will be handled via WebRTC in Phase B6.
 
 ### System Architecture Flow
 
@@ -29,9 +29,9 @@ HTTP Request (REST)
   ↓
 Express App (CORS, JSON, Rate Limiting)
   ↓
-Room Routes (/api/rooms)
+Room & Media Routes (/api/rooms)
   ↓
-Room Service (Validation & Business Rules)
+Media Service & Room Service
   ↓
 Storage Abstraction (RoomStorage)
   ↓
@@ -41,11 +41,11 @@ In-Memory Storage (Map)
 ```text
 Socket.io Connection
   ↓
-Room Socket Handlers (room:join, room:leave, room:lock, room:unlock, room:transfer-host)
+Socket Handlers (Room & Media)
   ↓
-Room Service
+Media Service / Room Service
   ↓
-Socket Room State Broadcasts
+Room-Scoped Socket State Broadcasts (room:state, media:state)
 ```
 
 ## Setup & Installation
@@ -118,48 +118,16 @@ Request Body:
 }
 ```
 
-Example Response (`HTTP 201 Created`):
-
-```json
-{
-  "success": true,
-  "data": {
-    "room": {
-      "id": "SYNC-7K9P2",
-      "roomId": "SYNC-7K9P2",
-      "name": "Friday Movie Night",
-      "mode": "youtube",
-      "locked": false,
-      "maxUsers": 10,
-      "hostId": "host-uuid",
-      "users": [
-        {
-          "id": "host-uuid",
-          "userId": "host-uuid",
-          "name": "Alice",
-          "displayName": "Alice",
-          "role": "host",
-          "joinedAt": 1730000000000,
-          "connected": true
-        }
-      ],
-      "userCount": 1,
-      "emptySince": null
-    },
-    "hostUserId": "host-uuid",
-    "user": {
-      "id": "host-uuid",
-      "displayName": "Alice",
-      "role": "host"
-    }
-  }
-}
-```
-
 ### Get Public Room Info
 
 ```text
 GET /api/rooms/:roomId
+```
+
+### Get Public Media State
+
+```text
+GET /api/rooms/:roomId/media
 ```
 
 Example Response (`HTTP 200 OK`):
@@ -168,14 +136,16 @@ Example Response (`HTTP 200 OK`):
 {
   "success": true,
   "data": {
-    "room": {
-      "id": "SYNC-7K9P2",
-      "roomId": "SYNC-7K9P2",
-      "name": "Friday Movie Night",
-      "mode": "youtube",
-      "locked": false,
-      "maxUsers": 10,
-      "userCount": 1
+    "media": {
+      "source": {
+        "type": "youtube",
+        "mediaId": "dQw4w9WgXcQ"
+      },
+      "status": "playing",
+      "position": 42.35,
+      "playbackRate": 1,
+      "updatedAt": 1730000000000,
+      "version": 3
     }
   }
 }
@@ -190,19 +160,37 @@ Example Response (`HTTP 200 OK`):
 * `room:lock` — Lock room (Host only)
 * `room:unlock` — Unlock room (Host only)
 * `room:transfer-host` — Transfer host role using `{ targetUserId }` (Host only)
-* `disconnect` — Socket disconnection handling
+* `media:set` — Set media source `{ type: "youtube", mediaId: "VIDEO_ID_OR_URL" }` (Host only)
+* `media:play` — Start playback `{ position: number }` (Host only)
+* `media:pause` — Pause playback `{ position: number }` (Host only)
+* `media:seek` — Seek to position `{ position: number }` (Host only)
+* `media:rate` — Change playback rate `{ playbackRate: number }` (Host only)
+* `media:clear` — Clear current media (Host only)
 
 ### Server → Client
 
 * `room:state` — Broadcasts updated public room state
 * `room:user-joined` — Emitted when a new user joins
 * `room:user-left` — Emitted when a user leaves or disconnects
+* `media:state` — Emitted to room members on media mutation and upon late join
 
-## Key Rules & Rules Engine
+## Key Rules & Synchronization Rules Engine
 
 1. **Room Codes**: Unique `SYNC-XXXXX` format (5 uppercase alphanumeric characters).
 2. **Capacity Limit**: Maximum 10 connected users per room (including the host).
-3. **Roles**: Creator is `host`. Other users are `member`. Only host can lock/unlock or transfer host.
-4. **Display Names**: Must be 2–24 characters. Duplicate display names are prohibited inside the *same* room, but allowed across different rooms.
-5. **Locking**: Locked rooms reject new join attempts with `ROOM_LOCKED`. Existing connected members remain.
-6. **Host Departure**: When a host leaves, host role is not automatically re-assigned in B2.
+3. **Roles & Host-Only Controls**: Only the host can lock/unlock, transfer host, and execute media controls (`media:set`, `media:play`, `media:pause`, `media:seek`, `media:rate`, `media:clear`). Non-hosts receive `MEDIA_CONTROL_FORBIDDEN`.
+4. **YouTube Source Validation**: Only YouTube (`type: "youtube"`) is supported in B3. Accepts 11-char video IDs and standard YouTube URLs. Rejects HTML/script/iframe payloads.
+5. **Server-Authoritative Time**: Playback `position` and `updatedAt` are anchored by the server. When `status === "playing"`, effective position is computed as `position + ((serverNow - updatedAt) / 1000) * playbackRate`.
+6. **Playback Rates**: Supported rates are `0.25`, `0.5`, `0.75`, `1`, `1.25`, `1.5`, `1.75`, `2`.
+7. **Versioning**: Every successful media mutation increments `version` by 1. Failed operations do not increment `version`.
+8. **Late Join Synchronization**: Upon joining a room (`room:join`), late-joining clients immediately receive the current authoritative `media:state`.
+9. **Room Isolation**: Media state and socket events are strictly isolated per room.
+
+## Deferred Scope (Future Phases)
+
+* **B4**: Granular host permissions
+* **B5**: Chat, reactions, presence system
+* **B6**: WebRTC signaling & local-file streaming
+* **B7**: Reconnection handling & room cleanup timers
+* **B8**: Production hardening & advanced monitoring
+

@@ -1,4 +1,5 @@
 import roomService from '../services/room.service.js';
+import mediaService from '../services/media.service.js';
 import logger from '../utils/logger.js';
 
 export const registerRoomHandlers = (io, socket) => {
@@ -12,6 +13,10 @@ export const registerRoomHandlers = (io, socket) => {
       socket.data.userId = result.user.id;
 
       socket.join(result.room.id);
+
+      // Late Join Synchronization: send current authoritative media state to joining socket
+      const mediaState = mediaService.getMediaState(result.room.id);
+      socket.emit('media:state', mediaState);
 
       // Broadcast to room
       socket.to(result.room.id).emit('room:user-joined', { user: result.user });

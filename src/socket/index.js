@@ -2,6 +2,7 @@ import { Server } from 'socket.io';
 import config from '../config/env.js';
 import logger from '../utils/logger.js';
 import { registerRoomHandlers } from './room.socket.js';
+import { registerMediaHandlers } from './media.socket.js';
 
 export const initSocket = (httpServer) => {
   const io = new Server(httpServer, {
@@ -16,6 +17,8 @@ export const initSocket = (httpServer) => {
 
     // Register room lifecycle handlers
     registerRoomHandlers(io, socket);
+    // Register media handlers
+    registerMediaHandlers(io, socket);
 
     socket.on('disconnect', (reason) => {
       logger.info('Client disconnected', { socketId: socket.id, reason });
