@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import roomStorage from '../storage/room.storage.js';
+import mediaService from './media.service.js';
 import generateRoomCode from '../utils/room-code.js';
 import { AppError, ERROR_CODES } from '../utils/errors.js';
 import {
@@ -97,6 +98,7 @@ export class RoomService {
         connected: u.connected !== false
       })),
       userCount: connectedUsers.length,
+      media: mediaService.getMediaState(room.id),
       emptySince: room.emptySince
     };
   }

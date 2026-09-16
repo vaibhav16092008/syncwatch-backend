@@ -7,6 +7,7 @@ import { AppError, ERROR_CODES, createApiResponse, createErrorResponse } from '.
 import { rateLimiterMiddleware } from './utils/rate-limit.js';
 import { initSocket } from './socket/index.js';
 import roomRoutes from './routes/room.routes.js';
+import mediaRoutes from './routes/media.routes.js';
 
 const app = express();
 
@@ -27,8 +28,9 @@ app.get('/api/health', (req, res) => {
   }));
 });
 
-// Room REST Routes
+// Room & Media REST Routes
 app.use('/api/rooms', roomRoutes);
+app.use('/api/rooms', mediaRoutes);
 
 // 404 Route Handler
 app.use((req, res, next) => {

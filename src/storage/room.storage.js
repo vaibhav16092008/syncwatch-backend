@@ -22,7 +22,14 @@ export class RoomStorage {
       maxUsers: 10,
       hostUserId: roomData.hostUserId || null,
       users: roomData.users ? [...roomData.users] : [],
-      media: null,
+      media: roomData.media || {
+        source: null,
+        status: 'paused',
+        position: 0,
+        playbackRate: 1,
+        updatedAt: 0,
+        version: 0
+      },
       messages: [],
       createdAt: roomData.createdAt || Date.now(),
       emptySince: null,
