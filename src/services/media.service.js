@@ -1,4 +1,5 @@
 import roomStorage from '../storage/room.storage.js';
+import permissionService from './permission.service.js';
 import { AppError, ERROR_CODES } from '../utils/errors.js';
 import {
   setMediaSchema,
@@ -47,15 +48,9 @@ export class MediaService {
 
   setMediaSource({ roomId, actingUserId, type, mediaId }) {
     const validated = validateMedia(setMediaSchema, { type, mediaId });
+    permissionService.assertPermission(roomId, actingUserId, 'MEDIA_CONTROL');
+
     const room = roomStorage.getRoom(roomId);
-    if (!room) {
-      throw new AppError('Room not found', 404, ERROR_CODES.ROOM_NOT_FOUND);
-    }
-
-    if (room.hostUserId !== actingUserId) {
-      throw new AppError('Only the host can change the media source', 403, ERROR_CODES.MEDIA_CONTROL_FORBIDDEN);
-    }
-
     const currentVersion = room.media ? room.media.version : 0;
     const now = Date.now();
 
@@ -79,15 +74,9 @@ export class MediaService {
 
   playMedia({ roomId, actingUserId, position }) {
     const validated = validateMedia(playMediaSchema, { position });
+    permissionService.assertPermission(roomId, actingUserId, 'MEDIA_CONTROL');
+
     const room = roomStorage.getRoom(roomId);
-    if (!room) {
-      throw new AppError('Room not found', 404, ERROR_CODES.ROOM_NOT_FOUND);
-    }
-
-    if (room.hostUserId !== actingUserId) {
-      throw new AppError('Only the host can control media playback', 403, ERROR_CODES.MEDIA_CONTROL_FORBIDDEN);
-    }
-
     if (!room.media || !room.media.source) {
       throw new AppError('No media loaded in room', 404, ERROR_CODES.MEDIA_NOT_FOUND);
     }
@@ -111,15 +100,9 @@ export class MediaService {
 
   pauseMedia({ roomId, actingUserId, position }) {
     const validated = validateMedia(pauseMediaSchema, { position });
+    permissionService.assertPermission(roomId, actingUserId, 'MEDIA_CONTROL');
+
     const room = roomStorage.getRoom(roomId);
-    if (!room) {
-      throw new AppError('Room not found', 404, ERROR_CODES.ROOM_NOT_FOUND);
-    }
-
-    if (room.hostUserId !== actingUserId) {
-      throw new AppError('Only the host can control media playback', 403, ERROR_CODES.MEDIA_CONTROL_FORBIDDEN);
-    }
-
     if (!room.media || !room.media.source) {
       throw new AppError('No media loaded in room', 404, ERROR_CODES.MEDIA_NOT_FOUND);
     }
@@ -143,15 +126,9 @@ export class MediaService {
 
   seekMedia({ roomId, actingUserId, position }) {
     const validated = validateMedia(seekMediaSchema, { position });
+    permissionService.assertPermission(roomId, actingUserId, 'MEDIA_CONTROL');
+
     const room = roomStorage.getRoom(roomId);
-    if (!room) {
-      throw new AppError('Room not found', 404, ERROR_CODES.ROOM_NOT_FOUND);
-    }
-
-    if (room.hostUserId !== actingUserId) {
-      throw new AppError('Only the host can control media playback', 403, ERROR_CODES.MEDIA_CONTROL_FORBIDDEN);
-    }
-
     if (!room.media || !room.media.source) {
       throw new AppError('No media loaded in room', 404, ERROR_CODES.MEDIA_NOT_FOUND);
     }
@@ -174,15 +151,9 @@ export class MediaService {
 
   setPlaybackRate({ roomId, actingUserId, playbackRate }) {
     const validated = validateMedia(setRateSchema, { playbackRate });
+    permissionService.assertPermission(roomId, actingUserId, 'MEDIA_CONTROL');
+
     const room = roomStorage.getRoom(roomId);
-    if (!room) {
-      throw new AppError('Room not found', 404, ERROR_CODES.ROOM_NOT_FOUND);
-    }
-
-    if (room.hostUserId !== actingUserId) {
-      throw new AppError('Only the host can change playback rate', 403, ERROR_CODES.MEDIA_CONTROL_FORBIDDEN);
-    }
-
     if (!room.media || !room.media.source) {
       throw new AppError('No media loaded in room', 404, ERROR_CODES.MEDIA_NOT_FOUND);
     }
@@ -208,15 +179,9 @@ export class MediaService {
   }
 
   clearMedia({ roomId, actingUserId }) {
+    permissionService.assertPermission(roomId, actingUserId, 'MEDIA_CONTROL');
+
     const room = roomStorage.getRoom(roomId);
-    if (!room) {
-      throw new AppError('Room not found', 404, ERROR_CODES.ROOM_NOT_FOUND);
-    }
-
-    if (room.hostUserId !== actingUserId) {
-      throw new AppError('Only the host can clear media', 403, ERROR_CODES.MEDIA_CONTROL_FORBIDDEN);
-    }
-
     const now = Date.now();
     const currentVersion = room.media ? room.media.version : 0;
 

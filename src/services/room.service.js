@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import roomStorage from '../storage/room.storage.js';
 import mediaService from './media.service.js';
+import permissionService from './permission.service.js';
 import generateRoomCode from '../utils/room-code.js';
 import { AppError, ERROR_CODES } from '../utils/errors.js';
 import {
@@ -217,15 +218,9 @@ export class RoomService {
     const validatedTarget = validate(transferHostSchema, { targetUserId });
     const normalizedRoomId = validate(roomIdSchema, roomId, ERROR_CODES.INVALID_ROOM_CODE);
 
+    permissionService.assertPermission(normalizedRoomId, actingUserId, 'HOST_TRANSFER');
+
     const room = roomStorage.getRoom(normalizedRoomId);
-    if (!room) {
-      throw new AppError('Room not found', 404, ERROR_CODES.ROOM_NOT_FOUND);
-    }
-
-    if (room.hostUserId !== actingUserId) {
-      throw new AppError('Only the host can transfer host status', 403, ERROR_CODES.FORBIDDEN);
-    }
-
     const targetUser = room.users.find(
       (u) => u.userId === validatedTarget.targetUserId || u.id === validatedTarget.targetUserId
     );
@@ -234,16 +229,21 @@ export class RoomService {
       throw new AppError('Target user not found in room', 404, ERROR_CODES.USER_NOT_FOUND);
     }
 
+    if (targetUser.connected === false) {
+      throw new AppError('Target user is disconnected', 403, ERROR_CODES.HOST_TRANSFER_FORBIDDEN);
+    }
+
     const updatedRoom = roomStorage.updateRoom(normalizedRoomId, (r) => {
+      const targetId = targetUser.userId || targetUser.id;
       r.users.forEach((u) => {
-        if (u.userId === actingUserId || u.id === actingUserId) {
+        const uId = u.userId || u.id;
+        if (uId === targetId) {
+          u.role = 'host';
+        } else {
           u.role = 'member';
         }
-        if (u.userId === validatedTarget.targetUserId || u.id === validatedTarget.targetUserId) {
-          u.role = 'host';
-        }
       });
-      r.hostUserId = validatedTarget.targetUserId;
+      r.hostUserId = targetId;
       return r;
     });
 
@@ -254,14 +254,7 @@ export class RoomService {
     validate(lockRoomSchema, { locked });
     const normalizedRoomId = validate(roomIdSchema, roomId, ERROR_CODES.INVALID_ROOM_CODE);
 
-    const room = roomStorage.getRoom(normalizedRoomId);
-    if (!room) {
-      throw new AppError('Room not found', 404, ERROR_CODES.ROOM_NOT_FOUND);
-    }
-
-    if (room.hostUserId !== actingUserId) {
-      throw new AppError('Only the host can lock or unlock the room', 403, ERROR_CODES.FORBIDDEN);
-    }
+    permissionService.assertPermission(normalizedRoomId, actingUserId, 'ROOM_LOCK');
 
     const updatedRoom = roomStorage.updateRoom(normalizedRoomId, (r) => {
       r.locked = Boolean(locked);
