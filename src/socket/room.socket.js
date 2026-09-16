@@ -42,13 +42,14 @@ export const registerRoomHandlers = (io, socket) => {
   });
 
   // room:leave
-  socket.on('room:leave', (callback = () => {}) => {
+  socket.on('room:leave', (payload = {}, callback) => {
+    const cb = typeof payload === 'function' ? payload : callback || (() => {});
     try {
       const roomId = socket.data.roomId;
       const userId = socket.data.userId;
 
       if (!roomId || !userId) {
-        callback({ success: true });
+        cb({ success: true });
         return;
       }
 
@@ -63,10 +64,10 @@ export const registerRoomHandlers = (io, socket) => {
         io.to(roomId).emit('room:state', updatedState);
       }
 
-      callback({ success: true });
+      cb({ success: true });
     } catch (error) {
       logger.warn('room:leave failed', { socketId: socket.id, error: error.message });
-      callback({
+      cb({
         success: false,
         error: {
           code: error.code || 'INTERNAL_ERROR',
@@ -77,28 +78,29 @@ export const registerRoomHandlers = (io, socket) => {
   });
 
   // room:lock
-  socket.on('room:lock', (callback = () => {}) => {
+  socket.on('room:lock', (payload = {}, callback) => {
+    const cb = typeof payload === 'function' ? payload : callback || (() => {});
     try {
       const roomId = socket.data.roomId;
       const userId = socket.data.userId;
 
       if (!roomId || !userId) {
-        throw new Error('You are not currently in a room');
+        throw new AppError('You are not currently in a room', 403, ERROR_CODES.FORBIDDEN);
       }
 
       const updatedState = roomService.setRoomLock({ roomId, actingUserId: userId, locked: true });
       io.to(roomId).emit('room:state', updatedState);
 
-      callback({
+      cb({
         success: true,
         data: { room: updatedState }
       });
     } catch (error) {
       logger.warn('room:lock failed', { socketId: socket.id, error: error.message });
-      callback({
+      cb({
         success: false,
         error: {
-          code: error.code || 'FORBIDDEN',
+          code: error.code || ERROR_CODES.FORBIDDEN,
           message: error.message
         }
       });
@@ -106,28 +108,29 @@ export const registerRoomHandlers = (io, socket) => {
   });
 
   // room:unlock
-  socket.on('room:unlock', (callback = () => {}) => {
+  socket.on('room:unlock', (payload = {}, callback) => {
+    const cb = typeof payload === 'function' ? payload : callback || (() => {});
     try {
       const roomId = socket.data.roomId;
       const userId = socket.data.userId;
 
       if (!roomId || !userId) {
-        throw new Error('You are not currently in a room');
+        throw new AppError('You are not currently in a room', 403, ERROR_CODES.FORBIDDEN);
       }
 
       const updatedState = roomService.setRoomLock({ roomId, actingUserId: userId, locked: false });
       io.to(roomId).emit('room:state', updatedState);
 
-      callback({
+      cb({
         success: true,
         data: { room: updatedState }
       });
     } catch (error) {
       logger.warn('room:unlock failed', { socketId: socket.id, error: error.message });
-      callback({
+      cb({
         success: false,
         error: {
-          code: error.code || 'FORBIDDEN',
+          code: error.code || ERROR_CODES.FORBIDDEN,
           message: error.message
         }
       });
@@ -135,29 +138,30 @@ export const registerRoomHandlers = (io, socket) => {
   });
 
   // room:transfer-host
-  socket.on('room:transfer-host', (payload = {}, callback = () => {}) => {
+  socket.on('room:transfer-host', (payload = {}, callback) => {
+    const cb = typeof payload === 'function' ? payload : callback || (() => {});
     try {
       const roomId = socket.data.roomId;
       const actingUserId = socket.data.userId;
-      const { targetUserId } = payload;
+      const { targetUserId } = typeof payload === 'object' && payload !== null ? payload : {};
 
       if (!roomId || !actingUserId) {
-        throw new Error('You are not currently in a room');
+        throw new AppError('You are not currently in a room', 403, ERROR_CODES.HOST_TRANSFER_FORBIDDEN);
       }
 
       const updatedState = roomService.transferHost({ roomId, actingUserId, targetUserId });
       io.to(roomId).emit('room:state', updatedState);
 
-      callback({
+      cb({
         success: true,
         data: { room: updatedState }
       });
     } catch (error) {
       logger.warn('room:transfer-host failed', { socketId: socket.id, error: error.message });
-      callback({
+      cb({
         success: false,
         error: {
-          code: error.code || 'FORBIDDEN',
+          code: error.code || ERROR_CODES.HOST_TRANSFER_FORBIDDEN,
           message: error.message
         }
       });
