@@ -5,6 +5,7 @@ import { registerRoomHandlers } from './room.socket.js';
 import { registerMediaHandlers } from './media.socket.js';
 import { registerChatHandlers } from './chat.socket.js';
 import { registerReactionHandlers } from './reaction.socket.js';
+import { registerWebRTCHandlers } from './webrtc.socket.js';
 
 export const initSocket = (httpServer) => {
   const io = new Server(httpServer, {
@@ -25,6 +26,8 @@ export const initSocket = (httpServer) => {
     registerChatHandlers(io, socket);
     // Register reaction handlers
     registerReactionHandlers(io, socket);
+    // Register WebRTC handlers
+    registerWebRTCHandlers(io, socket);
 
     socket.on('disconnect', (reason) => {
       logger.info('Client disconnected', { socketId: socket.id, reason });
