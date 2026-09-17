@@ -5,7 +5,7 @@ SyncWatch is a private real-time watch-party web application enabling users to c
 ## Current Phase
 
 ```text
-Phase B7 — Reconnection + Cleanup
+Phase B8 — Production Hardening, Security Fixes & Missing Tests
 ```
 
 ## Tech Stack
@@ -39,6 +39,12 @@ Phase B7 — Reconnection + Cleanup
 > * **30-Second Grace Period**: Unexpected socket disconnects trigger a 30-second bounded grace period managed by `reconnectionService`. During grace, the logical user identity, role, display name, and room membership are reserved. If the user reconnects within 30s, session state is fully restored without loss of host status or user ID change.
 > * **Deterministic Cleanup**: If the grace period expires without reconnection, the user is permanently removed, host role auto-transferred (if host), WebRTC metadata cleaned up, and `room:user-left`, `webrtc:peer-left`, `room:state`, `presence:state` broadcasted.
 > * **Explicit Leave**: `room:leave` immediately cancels any active grace period, invalidates the `reconnectToken`, performs permanent cleanup, and auto-transfers host role if necessary.
+
+> **Production Hardening & Security Architecture**:
+> * **HTTP Payload Limit**: Enforces `express.json({ limit: '10kb' })` to prevent JSON payload buffer exhaustion attacks on REST endpoints.
+> * **Socket.IO Transport Buffer Limit**: Enforces `maxHttpBufferSize: 64 * 1024` (64KB) on Socket.IO server initialization to block memory abuse from oversized websocket frames.
+> * **Lightweight HTTP Security Headers**: Custom lightweight header middleware sets `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and `Referrer-Policy: strict-origin-when-cross-origin` without adding heavy third-party packages (e.g. Helmet).
+> * **Rate Limiting & Proxy Trust**: Utilizes `getClientIp` helper to safely parse comma-separated `X-Forwarded-For` headers or `req.ip`. `app.set('trust proxy', 1)` is enabled dynamically via environment variable (`TRUST_PROXY=true`).
 
 ### System Architecture Flow
 

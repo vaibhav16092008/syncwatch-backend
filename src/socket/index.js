@@ -9,6 +9,7 @@ import { registerWebRTCHandlers } from './webrtc.socket.js';
 
 export const initSocket = (httpServer) => {
   const io = new Server(httpServer, {
+    maxHttpBufferSize: 64 * 1024,
     cors: {
       origin: config.CLIENT_URL,
       methods: ['GET', 'POST']

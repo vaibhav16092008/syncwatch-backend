@@ -19,7 +19,8 @@ const envSchema = z.object({
   CLIENT_URL: z.string().default('http://localhost:3000'),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(60000),
-  RATE_LIMIT_MAX_REQUESTS: z.coerce.number().default(100)
+  RATE_LIMIT_MAX_REQUESTS: z.coerce.number().default(100),
+  TRUST_PROXY: z.coerce.boolean().default(false)
 });
 
 const envToValidate = {
