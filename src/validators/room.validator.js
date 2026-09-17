@@ -50,6 +50,24 @@ export const roomIdSchema = z.string({ required_error: 'Room ID is required' })
     message: 'Invalid room code format'
   });
 
+export const reconnectRoomSchema = z.object({
+  roomId: z.string({ required_error: 'Room ID is required' })
+    .transform((val) => val.trim().toUpperCase())
+    .refine((val) => ROOM_CODE_REGEX.test(val), {
+      message: 'Invalid room code format'
+    }),
+  userId: z.string({ required_error: 'User ID is required' })
+    .transform((val) => val.trim())
+    .refine((val) => val.length > 0, {
+      message: 'User ID cannot be empty'
+    }),
+  reconnectToken: z.string({ required_error: 'Reconnect token is required' })
+    .transform((val) => val.trim())
+    .refine((val) => val.length > 0, {
+      message: 'Reconnect token cannot be empty'
+    })
+});
+
 export const validate = (schema, data, customErrorCode = ERROR_CODES.VALIDATION_ERROR) => {
   const result = schema.safeParse(data);
   if (!result.success) {

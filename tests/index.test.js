@@ -12,6 +12,7 @@ import './chat.test.js';
 import './reaction.test.js';
 import './presence.test.js';
 import './webrtc.test.js';
+import './reconnection.test.js';
 
 after(async () => {
   if (httpServer.listening) {

@@ -351,7 +351,7 @@ describe('Phase B2 — Room Management Tests', () => {
           client.disconnect();
           setTimeout(() => {
             const roomInfo = roomStorage.getRoom(roomId);
-            assert.equal(roomInfo.users.some((u) => u.displayName === 'TempGuest'), false);
+            assert.equal(roomInfo.users.filter((u) => u.connected !== false).some((u) => u.displayName === 'TempGuest'), false);
             resolve();
           }, 100);
         });
