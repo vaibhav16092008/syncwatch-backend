@@ -3,6 +3,8 @@ import config from '../config/env.js';
 import logger from '../utils/logger.js';
 import { registerRoomHandlers } from './room.socket.js';
 import { registerMediaHandlers } from './media.socket.js';
+import { registerChatHandlers } from './chat.socket.js';
+import { registerReactionHandlers } from './reaction.socket.js';
 
 export const initSocket = (httpServer) => {
   const io = new Server(httpServer, {
@@ -19,6 +21,10 @@ export const initSocket = (httpServer) => {
     registerRoomHandlers(io, socket);
     // Register media handlers
     registerMediaHandlers(io, socket);
+    // Register chat handlers
+    registerChatHandlers(io, socket);
+    // Register reaction handlers
+    registerReactionHandlers(io, socket);
 
     socket.on('disconnect', (reason) => {
       logger.info('Client disconnected', { socketId: socket.id, reason });

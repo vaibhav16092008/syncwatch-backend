@@ -23,13 +23,7 @@ describe('Phase B3 — Media & Synchronization Tests', () => {
   });
 
   after(async () => {
-    if (httpServer.listening) {
-      await new Promise((resolve) => {
-        io.close(() => {
-          httpServer.close(resolve);
-        });
-      });
-    }
+    // Keep server active for subsequent test files sharing singleton httpServer
   });
 
   beforeEach(() => {
@@ -39,7 +33,8 @@ describe('Phase B3 — Media & Synchronization Tests', () => {
   const createClient = () => {
     return ioClient(`http://localhost:${port}`, {
       transports: ['websocket'],
-      forceNew: true
+      forceNew: true,
+      reconnection: false
     });
   };
 
@@ -279,15 +274,19 @@ describe('Phase B3 — Media & Synchronization Tests', () => {
         memberSocket.emit('room:join', { roomId: room.id, displayName: 'Member' }, resolve);
       });
 
-      // Member listens for media:state
+      // Member listens for media:state mutation
       const statePromise = new Promise((resolve) => {
         memberSocket.on('media:state', (state) => {
-          resolve(state);
+          if (state && state.source) {
+            resolve(state);
+          }
         });
       });
 
       // Host sets media
-      hostSocket.emit('media:set', { type: 'youtube', mediaId: 'dQw4w9WgXcQ' });
+      await new Promise((resolve) => {
+        hostSocket.emit('media:set', { type: 'youtube', mediaId: 'dQw4w9WgXcQ' }, resolve);
+      });
 
       const receivedState = await statePromise;
       assert.deepStrictEqual(receivedState.source, { type: 'youtube', mediaId: 'dQw4w9WgXcQ' });
@@ -440,8 +439,16 @@ describe('Phase B3 — Media & Synchronization Tests', () => {
       const joinARes = await new Promise((resolve) => hostASocket.emit('room:join', { roomId: roomA.id, displayName: 'HostA' }, resolve));
       const joinBRes = await new Promise((resolve) => hostBSocket.emit('room:join', { roomId: roomB.id, displayName: 'HostB' }, resolve));
 
-      roomStorage.updateRoom(roomA.id, (r) => { r.hostUserId = joinARes.data.user.id; return r; });
-      roomStorage.updateRoom(roomB.id, (r) => { r.hostUserId = joinBRes.data.user.id; return r; });
+      roomStorage.updateRoom(roomA.id, (r) => {
+        r.hostUserId = joinARes.data.user.id;
+        r.users.forEach((u) => { u.role = u.id === joinARes.data.user.id ? 'host' : 'member'; });
+        return r;
+      });
+      roomStorage.updateRoom(roomB.id, (r) => {
+        r.hostUserId = joinBRes.data.user.id;
+        r.users.forEach((u) => { u.role = u.id === joinBRes.data.user.id ? 'host' : 'member'; });
+        return r;
+      });
 
       // Simultaneously set different media sources
       await Promise.all([
