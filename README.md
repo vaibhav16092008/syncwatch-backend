@@ -5,7 +5,7 @@ SyncWatch is a private real-time watch-party web application enabling users to c
 ## Current Phase
 
 ```text
-Phase B6 — WebRTC Signaling + Local File/Media Coordination
+Phase B7 — Reconnection + Cleanup
 ```
 
 ## Tech Stack
@@ -27,12 +27,18 @@ Phase B6 — WebRTC Signaling + Local File/Media Coordination
 > **Chat, Reactions & Presence Architecture**:
 > * **Chat**: Room-scoped and bounded in-memory to 100 messages per room max. Sent messages are validated (max 500 chars), HTML-sanitized, assigned server UUIDs and timestamps, and broadcasted via `chat:message`. Late joiners receive `chat:history` upon joining. Kept Socket.IO-only by default (no REST chat endpoint).
 > * **Floating Reactions**: Purely ephemeral room-scoped events (`reaction:event`). Emojis are strictly whitelisted (`👍`, `❤️`, `😂`, `😮`, `😢`, `🔥`, `🎉`, `👏`). Reactions are unbuffered and not stored for late joiners.
-> * **Presence System**: Server-authoritative and event-driven. Broadcasts updated connected user lists (`presence:state`) whenever a user joins, leaves, or disconnects.
+> * **Presence System**: Server-authoritative and event-driven. Broadcasts updated connected user lists (`presence:state`) whenever a user joins, leaves, disconnects, or reconnects.
 
 > **WebRTC Signaling & Local File/Media Architecture**:
 > * **Signaling Control Plane**: Provides pure Socket.IO signaling (`webrtc:offer`, `webrtc:answer`, `webrtc:ice-candidate`, `webrtc:peer-ready`, `webrtc:file-metadata`). The backend does NOT relay media streams, host TURN/SFU infrastructure, or store file bytes.
 > * **Peer-to-Peer Transfer**: WebRTC `MediaStream` (audio/video/screen-share) and `RTCDataChannel` (local file transfer) flow directly P2P between browser peers.
 > * **Transient Peer State**: WebRTC peer readiness is tracked transiently in `room.webrtc.peers` and cleaned up when a user leaves or disconnects (`webrtc:peer-left`).
+
+> **Reconnection & Room Cleanup Architecture**:
+> * **Reconnection Token**: Server generates a cryptographically secure `reconnectToken` (`UUID`) on `room:join` / `POST /api/rooms`. Reconnecting clients must supply `{ roomId, userId, reconnectToken }`. Identity restoration is server-authoritative and protected against token forgery or cross-room session theft.
+> * **30-Second Grace Period**: Unexpected socket disconnects trigger a 30-second bounded grace period managed by `reconnectionService`. During grace, the logical user identity, role, display name, and room membership are reserved. If the user reconnects within 30s, session state is fully restored without loss of host status or user ID change.
+> * **Deterministic Cleanup**: If the grace period expires without reconnection, the user is permanently removed, host role auto-transferred (if host), WebRTC metadata cleaned up, and `room:user-left`, `webrtc:peer-left`, `room:state`, `presence:state` broadcasted.
+> * **Explicit Leave**: `room:leave` immediately cancels any active grace period, invalidates the `reconnectToken`, performs permanent cleanup, and auto-transfers host role if necessary.
 
 ### System Architecture Flow
 
@@ -55,15 +61,15 @@ In-Memory Storage (Map)
 ```text
 Socket.io Connection
   ↓
-Socket Handlers (Room, Media, Chat, Reaction)
+Socket Handlers (Room, Media, Chat, Reaction, WebRTC)
   ↓
 Trusted Context (socket.data.roomId, socket.data.userId)
   ↓
-Permission Service & Validators (Chat / Reaction / Room)
+Permission Service & Validators (Chat / Reaction / Room / WebRTC)
   ↓
-Services (ChatService, ReactionService, PresenceService, MediaService, RoomService)
+Services (ReconnectionService, ChatService, ReactionService, PresenceService, WebRTCService, MediaService, RoomService)
   ↓
-Room-Scoped Socket State Broadcasts (room:state, media:state, chat:message, reaction:event, presence:state)
+Room-Scoped Socket State Broadcasts (room:state, media:state, chat:message, reaction:event, presence:state, webrtc:*)
 ```
 
 ## Setup & Installation
@@ -174,6 +180,7 @@ Example Response (`HTTP 200 OK`):
 ### Client → Server
 
 * `room:join` — Join a room using `{ roomId, displayName }`
+* `room:reconnect` — Reconnect to a room using `{ roomId, userId, reconnectToken }`
 * `room:leave` — Leave current room
 * `room:lock` — Lock room (Host only, enforced via `assertPermission(roomId, userId, 'ROOM_LOCK')`)
 * `room:unlock` — Unlock room (Host only, enforced via `assertPermission(roomId, userId, 'ROOM_LOCK')`)
@@ -196,18 +203,18 @@ Example Response (`HTTP 200 OK`):
 
 * `room:state` — Broadcasts updated public room state
 * `room:user-joined` — Emitted when a new user joins
-* `room:user-left` — Emitted when a user leaves or disconnects
-* `media:state` — Emitted to room members on media mutation and upon late join
+* `room:user-left` — Emitted when a user leaves or disconnects permanently
+* `media:state` — Emitted to room members on media mutation and upon late join or reconnect
 * `chat:message` — Broadcasts new chat message to room members
 * `chat:history` — Emitted to joining socket with bounded room chat history (max 100)
 * `reaction:event` — Broadcasts ephemeral floating reaction to room members
-* `presence:state` — Emitted to room members on join, leave, or disconnect containing active connected users list
+* `presence:state` — Emitted to room members on join, leave, disconnect, or reconnect containing active connected users list
 * `webrtc:peer-ready` — Broadcasts peer readiness to room members with `{ userId, displayName, socketId }`
 * `webrtc:offer` — Relays SDP offer directly to target peer with trusted `{ senderUserId, senderDisplayName, sdp }`
 * `webrtc:answer` — Relays SDP answer directly to target peer with trusted `{ senderUserId, senderDisplayName, sdp }`
 * `webrtc:ice-candidate` — Relays ICE candidate directly to target peer with trusted `{ senderUserId, candidate }`
 * `webrtc:file-offer` — Relays local file metadata offer to target peer or room with trusted `{ senderUserId, senderDisplayName, fileId, name, size, mimeType }`
-* `webrtc:peer-left` — Broadcasts to room members when a WebRTC peer leaves or disconnects `{ userId }`
+* `webrtc:peer-left` — Broadcasts to room members when a WebRTC peer leaves or disconnects permanently `{ userId }`
 
 ## Permission & Security Model
 
@@ -220,8 +227,9 @@ Example Response (`HTTP 200 OK`):
 5. **Chat Validation & Sanitization**: Chat messages must be non-empty strings (max 500 characters). HTML tags (`<`, `>`, `"`, `'`, `&`) are sanitized before broadcasting/storage.
 6. **Reaction Whitelisting**: Reactions are strictly validated against an allowed set (`👍`, `❤️`, `😂`, `😮`, `😢`, `🔥`, `🎉`, `👏`). Invalid or arbitrary string payloads are rejected with `INVALID_REACTION`.
 7. **WebRTC Target & Payload Validation**: WebRTC signaling (`offer`, `answer`, `ice-candidate`, `file-metadata`) requires both sender and target to be active connected members of the same room (`socket.data.roomId`). SDP strings are capped at 32KB (`INVALID_WEBRTC_SIGNAL`), ICE candidate strings capped at 8KB (`INVALID_WEBRTC_SIGNAL`), and file size declared limit is capped at 10GB (`INVALID_FILE_METADATA`).
-8. **Room Isolation**: Users from Room A cannot inspect, manage, transfer host, lock/unlock, alter media, send chat, trigger reactions, relay WebRTC signals, target peers, or receive presence updates from Room B.
-9. **Failure Atomicity**: Unauthorized or invalid operations fail cleanly with appropriate HTTP 403 / socket error codes without side-effects.
+8. **Reconnection Security & Token Validation**: Server issues UUID `reconnectToken` upon room join. Reconnections require matching `roomId`, `userId`, and `reconnectToken`. Forged or cross-room reconnection attempts fail cleanly with `INVALID_RECONNECT_TOKEN` / `SESSION_EXPIRED`.
+9. **Room Isolation**: Users from Room A cannot inspect, manage, transfer host, lock/unlock, alter media, send chat, trigger reactions, relay WebRTC signals, target peers, or receive presence updates from Room B.
+10. **Failure Atomicity**: Unauthorized or invalid operations fail cleanly with appropriate HTTP 403 / socket error codes without side-effects.
 
 ## Key Rules & Synchronization Rules Engine
 
@@ -232,16 +240,13 @@ Example Response (`HTTP 200 OK`):
 5. **Server-Authoritative Time**: Playback `position` and `updatedAt` are anchored by the server. When `status === "playing"`, effective position is computed as `position + ((serverNow - updatedAt) / 1000) * playbackRate`.
 6. **Playback Rates**: Supported rates are `0.25`, `0.5`, `0.75`, `1`, `1.25`, `1.5`, `1.75`, `2`.
 7. **Versioning**: Every successful media mutation increments `version` by 1. Failed operations do not increment `version`.
-8. **Late Join Synchronization**: Upon joining a room (`room:join`), late-joining clients immediately receive current authoritative `media:state` and bounded `chat:history`.
+8. **Late Join & Reconnect Synchronization**: Upon joining or reconnecting to a room, clients immediately receive current authoritative `media:state` and bounded `chat:history`.
 9. **Ephemeral Floating Reactions**: Reactions are real-time room events (`reaction:event`) that are not persisted for late joiners.
-10. **Server-Authoritative Presence**: Presence state (`presence:state`) is computed from active connected room members and broadcasted on room join, leave, and disconnect.
+10. **Server-Authoritative Presence**: Presence state (`presence:state`) is computed from active connected room members and broadcasted on room join, leave, disconnect, or reconnect.
 11. **WebRTC P2P Signaling & File Coordination**: Pure Socket.IO signaling control plane. Zero server media relaying or file storage. File bytes travel directly peer-to-peer via WebRTC `RTCDataChannel`.
-12. **Room Isolation**: Media state, chat messages, reactions, presence state, WebRTC signals, socket events, and permissions are strictly isolated per room.
+12. **30-Second Disconnect Grace Period**: Unexpected socket drops preserve logical user state, host status, and WebRTC peer binding for 30 seconds. On reconnect, full session state is restored.
+13. **Room Isolation**: Media state, chat messages, reactions, presence state, WebRTC signals, socket events, and permissions are strictly isolated per room.
 
 ## Deferred Scope (Future Phases)
 
-* **B7**: Reconnection handling & room cleanup timers
 * **B8**: Production audit & deployment readiness
-
-
-

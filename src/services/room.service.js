@@ -2,11 +2,14 @@ import crypto from 'node:crypto';
 import roomStorage from '../storage/room.storage.js';
 import mediaService from './media.service.js';
 import permissionService from './permission.service.js';
+import webrtcService from './webrtc.service.js';
+import reconnectionService from './reconnection.service.js';
 import generateRoomCode from '../utils/room-code.js';
 import { AppError, ERROR_CODES } from '../utils/errors.js';
 import {
   createRoomSchema,
   joinRoomSchema,
+  reconnectRoomSchema,
   transferHostSchema,
   lockRoomSchema,
   roomIdSchema,
@@ -19,6 +22,7 @@ export class RoomService {
 
     const roomId = generateRoomCode((code) => !roomStorage.hasRoom(code));
     const hostUserId = crypto.randomUUID();
+    const reconnectToken = crypto.randomUUID();
 
     const hostUser = {
       id: hostUserId,
@@ -26,8 +30,10 @@ export class RoomService {
       displayName: validatedData.displayName,
       role: 'host',
       socketId: null,
+      reconnectToken,
       joinedAt: Date.now(),
-      connected: true
+      connected: true,
+      disconnectedAt: null
     };
 
     const room = roomStorage.createRoom(roomId, {
@@ -95,6 +101,7 @@ export class RoomService {
         name: u.displayName,
         displayName: u.displayName,
         role: u.role,
+        reconnectToken: u.reconnectToken,
         joinedAt: u.joinedAt,
         connected: u.connected !== false
       })),
@@ -131,14 +138,18 @@ export class RoomService {
     }
 
     const userId = crypto.randomUUID();
+    const reconnectToken = crypto.randomUUID();
+
     const newUser = {
       id: userId,
       userId,
       displayName: validated.displayName,
       role: 'member',
       socketId,
+      reconnectToken,
       joinedAt: Date.now(),
-      connected: true
+      connected: true,
+      disconnectedAt: null
     };
 
     const updatedRoom = roomStorage.updateRoom(normalizedRoomId, (r) => {
@@ -153,7 +164,66 @@ export class RoomService {
         userId,
         displayName: newUser.displayName,
         role: newUser.role,
+        reconnectToken: newUser.reconnectToken,
         joinedAt: newUser.joinedAt,
+        connected: true
+      },
+      room: this.getPublicRoomState(updatedRoom.id)
+    };
+  }
+
+  reconnectUser({ roomId, userId, reconnectToken, newSocketId }) {
+    const validated = validate(reconnectRoomSchema, { roomId, userId, reconnectToken });
+    const normalizedRoomId = validated.roomId;
+
+    const room = roomStorage.getRoom(normalizedRoomId);
+    if (!room) {
+      throw new AppError('Room not found', 404, ERROR_CODES.ROOM_NOT_FOUND);
+    }
+
+    const user = room.users.find((u) => (u.userId === validated.userId || u.id === validated.userId));
+    if (!user) {
+      throw new AppError('Session expired or user not in room', 400, ERROR_CODES.SESSION_EXPIRED);
+    }
+
+    // Token & identity anti-spoofing security checks:
+    if (user.reconnectToken !== validated.reconnectToken) {
+      throw new AppError('Invalid reconnect token', 403, ERROR_CODES.INVALID_RECONNECT_TOKEN);
+    }
+
+    if ((user.userId || user.id) !== validated.userId) {
+      throw new AppError('User ID mismatch', 403, ERROR_CODES.INVALID_RECONNECT_TOKEN);
+    }
+
+    if (room.id !== normalizedRoomId) {
+      throw new AppError('Room ID mismatch', 403, ERROR_CODES.INVALID_RECONNECT_TOKEN);
+    }
+
+    // Cancel grace period timer
+    reconnectionService.cancelGracePeriod({ roomId: room.id, userId: user.userId || user.id });
+
+    // Update user state to connected
+    const updatedRoom = roomStorage.updateRoom(normalizedRoomId, (r) => {
+      const u = r.users.find((usr) => (usr.userId === validated.userId || usr.id === validated.userId));
+      if (u) {
+        u.socketId = newSocketId;
+        u.connected = true;
+        u.disconnectedAt = null;
+      }
+      r.emptySince = null;
+      return r;
+    });
+
+    const targetUser = updatedRoom.users.find((u) => (u.userId === validated.userId || u.id === validated.userId));
+
+    return {
+      user: {
+        id: targetUser.id || targetUser.userId,
+        userId: targetUser.userId || targetUser.id,
+        displayName: targetUser.displayName,
+        role: targetUser.role,
+        reconnectToken: targetUser.reconnectToken,
+        joinedAt: targetUser.joinedAt,
         connected: true
       },
       room: this.getPublicRoomState(updatedRoom.id)
@@ -162,9 +232,14 @@ export class RoomService {
 
   leaveRoom({ roomId, userId, socketId }) {
     let targetRoomId = roomId;
-    if (!targetRoomId && socketId) {
-      const room = roomStorage.getRoomBySocketId(socketId);
-      if (room) targetRoomId = room.id;
+    let targetUserId = userId;
+
+    if ((!targetRoomId || !targetUserId) && socketId) {
+      const found = roomStorage.findUserBySocketId(socketId);
+      if (found) {
+        targetRoomId = targetRoomId || found.room.id;
+        targetUserId = targetUserId || found.user.userId || found.user.id;
+      }
     }
 
     if (!targetRoomId) return null;
@@ -173,14 +248,51 @@ export class RoomService {
     const room = roomStorage.getRoom(normalizedRoomId);
     if (!room) return null;
 
+    if (targetUserId) {
+      reconnectionService.cancelGracePeriod({ roomId: room.id, userId: targetUserId });
+    }
+
+    let leavingUserWasHost = false;
+
     const updatedRoom = roomStorage.updateRoom(normalizedRoomId, (r) => {
+      const leavingUser = r.users.find((u) => {
+        if (targetUserId && (u.userId === targetUserId || u.id === targetUserId)) return true;
+        if (socketId && u.socketId === socketId) return true;
+        return false;
+      });
+
+      if (leavingUser) {
+        if (leavingUser.role === 'host' || r.hostUserId === leavingUser.userId || r.hostUserId === leavingUser.id) {
+          leavingUserWasHost = true;
+        }
+        if (leavingUser.reconnectToken) {
+          reconnectionService.cancelGracePeriodByToken(leavingUser.reconnectToken);
+        }
+      }
+
       r.users = r.users.filter((u) => {
-        if (userId && (u.userId === userId || u.id === userId)) return false;
+        if (targetUserId && (u.userId === targetUserId || u.id === targetUserId)) return false;
         if (socketId && u.socketId === socketId) return false;
         return true;
       });
 
       const activeUsers = r.users.filter((u) => u.connected !== false);
+
+      // Auto-transfer host if host leaves explicitly
+      if (leavingUserWasHost) {
+        if (activeUsers.length > 0) {
+          const nextHost = activeUsers[0];
+          const nextHostId = nextHost.userId || nextHost.id;
+          r.hostUserId = nextHostId;
+          r.users.forEach((u) => {
+            const uId = u.userId || u.id;
+            u.role = uId === nextHostId ? 'host' : 'member';
+          });
+        } else {
+          r.hostUserId = null;
+        }
+      }
+
       if (activeUsers.length === 0) {
         r.emptySince = Date.now();
       }
@@ -191,25 +303,101 @@ export class RoomService {
     return this.getPublicRoomState(updatedRoom.id);
   }
 
-  handleDisconnect({ socketId }) {
+  handleDisconnect({ socketId, onExpire }) {
     if (!socketId) return null;
 
     const found = roomStorage.findUserBySocketId(socketId);
     if (!found) return null;
 
     const { user, room } = found;
+    const userId = user.userId || user.id;
 
+    // Stale Disconnect Protection:
+    // If the socketId on the stored user does not match the disconnecting socketId
+    // (e.g. user already reconnected with a new socketId), ignore the stale disconnect event.
+    if (user.socketId !== socketId) {
+      return null;
+    }
+
+    // Mark user disconnected & set timestamp
     const updatedRoom = roomStorage.updateRoom(room.id, (r) => {
-      r.users = r.users.filter((u) => u.socketId !== socketId);
-      const activeUsers = r.users.filter((u) => u.connected !== false);
+      const u = r.users.find((usr) => (usr.userId === userId || usr.id === userId));
+      if (u) {
+        u.connected = false;
+        u.disconnectedAt = Date.now();
+      }
+      const activeUsers = r.users.filter((usr) => usr.connected !== false);
       if (activeUsers.length === 0) {
         r.emptySince = Date.now();
       }
       return r;
     });
 
+    // Start 30s grace period timer
+    reconnectionService.startGracePeriod({
+      roomId: room.id,
+      userId,
+      reconnectToken: user.reconnectToken,
+      onExpire: async () => {
+        if (typeof onExpire === 'function') {
+          await onExpire({ roomId: room.id, userId, reconnectToken: user.reconnectToken });
+        }
+      }
+    });
+
     return {
-      userId: user.userId || user.id,
+      userId,
+      reconnectToken: user.reconnectToken,
+      room: this.getPublicRoomState(updatedRoom.id)
+    };
+  }
+
+  expireUser({ roomId, userId, reconnectToken }) {
+    const normalizedId = roomStorage.normalizeRoomId(roomId);
+    const room = roomStorage.getRoom(normalizedId);
+    if (!room) return null;
+
+    const user = room.users.find((u) => (u.userId === userId || u.id === userId));
+    if (!user) return null;
+
+    // If user reconnected or token mismatch, ignore expiration
+    if (user.connected === true || (reconnectToken && user.reconnectToken !== reconnectToken)) {
+      return null;
+    }
+
+    let wasHost = user.role === 'host' || room.hostUserId === userId || room.hostUserId === user.id;
+
+    const updatedRoom = roomStorage.updateRoom(normalizedId, (r) => {
+      r.users = r.users.filter((u) => !(u.userId === userId || u.id === userId));
+
+      const activeUsers = r.users.filter((u) => u.connected !== false);
+
+      if (wasHost) {
+        if (activeUsers.length > 0) {
+          const nextHost = activeUsers[0];
+          const nextHostId = nextHost.userId || nextHost.id;
+          r.hostUserId = nextHostId;
+          r.users.forEach((u) => {
+            const uId = u.userId || u.id;
+            u.role = uId === nextHostId ? 'host' : 'member';
+          });
+        } else {
+          r.hostUserId = null;
+        }
+      }
+
+      if (activeUsers.length === 0) {
+        r.emptySince = Date.now();
+      }
+
+      return r;
+    });
+
+    // Clean WebRTC peer state on grace expiration
+    webrtcService.removePeerFromRoom({ roomId: normalizedId, userId });
+
+    return {
+      userId,
       room: this.getPublicRoomState(updatedRoom.id)
     };
   }

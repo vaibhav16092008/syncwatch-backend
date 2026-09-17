@@ -53,6 +53,63 @@ export const registerRoomHandlers = (io, socket) => {
     }
   });
 
+  // room:reconnect
+  socket.on('room:reconnect', (payload = {}, callback = () => {}) => {
+    try {
+      const { roomId, userId, reconnectToken } = payload;
+      const result = roomService.reconnectUser({
+        roomId,
+        userId,
+        reconnectToken,
+        newSocketId: socket.id
+      });
+
+      socket.data.roomId = result.room.id;
+      socket.data.userId = result.user.id;
+
+      socket.join(result.room.id);
+
+      // Late Join / Reconnect Synchronization: send current authoritative media state
+      const mediaState = mediaService.getMediaState(result.room.id);
+      socket.emit('media:state', mediaState);
+
+      // Send chat history to reconnecting socket
+      const chatHistory = chatService.getChatHistory(result.room.id, result.user.id);
+      socket.emit('chat:history', { messages: chatHistory });
+
+      // Update WebRTC peer binding if user was previously a ready peer
+      const readyPeers = webrtcService.getReadyPeers(result.room.id);
+      const existingPeer = readyPeers.find((p) => p.userId === result.user.id);
+      if (existingPeer) {
+        webrtcService.setPeerReady({ roomId: result.room.id, userId: result.user.id, socketId: socket.id });
+      }
+
+      // Broadcast presence state update to room
+      const presenceUsers = presenceService.getPresenceState(result.room.id);
+      io.to(result.room.id).emit('presence:state', { users: presenceUsers });
+
+      // Broadcast updated room state
+      io.to(result.room.id).emit('room:state', result.room);
+
+      callback({
+        success: true,
+        data: {
+          user: result.user,
+          room: result.room
+        }
+      });
+    } catch (error) {
+      logger.warn('room:reconnect failed', { socketId: socket.id, error: error.message });
+      callback({
+        success: false,
+        error: {
+          code: error.code || 'INTERNAL_ERROR',
+          message: error.message || 'Failed to reconnect to room'
+        }
+      });
+    }
+  });
+
   // room:leave
   socket.on('room:leave', (payload = {}, callback) => {
     const cb = typeof payload === 'function' ? payload : callback || (() => {});
@@ -188,16 +245,31 @@ export const registerRoomHandlers = (io, socket) => {
   // disconnect
   socket.on('disconnect', () => {
     try {
-      const result = roomService.handleDisconnect({ socketId: socket.id });
-      if (result) {
-        const { userId, room } = result;
-        webrtcService.removePeerFromRoom({ roomId: room.id, userId });
-        io.to(room.id).emit('room:user-left', { userId });
-        io.to(room.id).emit('webrtc:peer-left', { userId });
-        io.to(room.id).emit('room:state', room);
+      const result = roomService.handleDisconnect({
+        socketId: socket.id,
+        onExpire: async ({ roomId, userId, reconnectToken }) => {
+          try {
+            const expiredResult = roomService.expireUser({ roomId, userId, reconnectToken });
+            if (expiredResult) {
+              const { userId: expUserId, room: expRoom } = expiredResult;
+              io.to(roomId).emit('room:user-left', { userId: expUserId });
+              io.to(roomId).emit('webrtc:peer-left', { userId: expUserId });
+              io.to(roomId).emit('room:state', expRoom);
 
+              const presenceUsers = presenceService.getPresenceState(roomId);
+              io.to(roomId).emit('presence:state', { users: presenceUsers });
+            }
+          } catch (err) {
+            logger.error('Error handling grace expiration broadcast', { roomId, userId, error: err.message });
+          }
+        }
+      });
+
+      if (result) {
+        const { room } = result;
         const presenceUsers = presenceService.getPresenceState(room.id);
         io.to(room.id).emit('presence:state', { users: presenceUsers });
+        io.to(room.id).emit('room:state', room);
       }
     } catch (error) {
       logger.error('Disconnect error', { socketId: socket.id, error: error.message });
