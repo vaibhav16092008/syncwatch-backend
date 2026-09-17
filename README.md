@@ -5,7 +5,7 @@ SyncWatch is a private real-time watch-party web application enabling users to c
 ## Current Phase
 
 ```text
-Phase B4 — Permissions + Host Management
+Phase B5 — Chat + Reactions + Presence
 ```
 
 ## Tech Stack
@@ -23,6 +23,11 @@ Phase B4 — Permissions + Host Management
 > **Media & Synchronization Architecture**: Media state is server-authoritative and room-scoped. Playing media position is dynamically calculated from server time anchors (`updatedAt`) and playback rate (`playbackRate`). Local video files will be handled via WebRTC in Phase B6.
 
 > **Centralized Permission & Authorization Architecture**: Permissions are server-authoritative, room-scoped, explicit, and enforced via `permissionService`. Client role/permission claims in request payloads or sockets are strictly ignored in favor of trusted server socket data (`socket.data.roomId`, `socket.data.userId`). Capabilities (`ROOM_MANAGE`, `ROOM_LOCK`, `HOST_TRANSFER`, `MEDIA_CONTROL`) are dynamically derived from authoritative user roles (`host` vs `member`).
+
+> **Chat, Reactions & Presence Architecture**:
+> * **Chat**: Room-scoped and bounded in-memory to 100 messages per room max. Sent messages are validated (max 500 chars), HTML-sanitized, assigned server UUIDs and timestamps, and broadcasted via `chat:message`. Late joiners receive `chat:history` upon joining. Kept Socket.IO-only by default (no REST chat endpoint).
+> * **Floating Reactions**: Purely ephemeral room-scoped events (`reaction:event`). Emojis are strictly whitelisted (`👍`, `❤️`, `😂`, `😮`, `😢`, `🔥`, `🎉`, `👏`). Reactions are unbuffered and not stored for late joiners.
+> * **Presence System**: Server-authoritative and event-driven. Broadcasts updated connected user lists (`presence:state`) whenever a user joins, leaves, or disconnects.
 
 ### System Architecture Flow
 
@@ -45,15 +50,15 @@ In-Memory Storage (Map)
 ```text
 Socket.io Connection
   ↓
-Socket Handlers (Room & Media)
+Socket Handlers (Room, Media, Chat, Reaction)
   ↓
 Trusted Context (socket.data.roomId, socket.data.userId)
   ↓
-Permission Service Check (assertPermission)
+Permission Service & Validators (Chat / Reaction / Room)
   ↓
-Media Service / Room Service
+Services (ChatService, ReactionService, PresenceService, MediaService, RoomService)
   ↓
-Room-Scoped Socket State Broadcasts (room:state, media:state)
+Room-Scoped Socket State Broadcasts (room:state, media:state, chat:message, reaction:event, presence:state)
 ```
 
 ## Setup & Installation
@@ -174,6 +179,8 @@ Example Response (`HTTP 200 OK`):
 * `media:seek` — Seek to position `{ position: number }` (Host only, enforced via `MEDIA_CONTROL`)
 * `media:rate` — Change playback rate `{ playbackRate: number }` (Host only, enforced via `MEDIA_CONTROL`)
 * `media:clear` — Clear current media (Host only, enforced via `MEDIA_CONTROL`)
+* `chat:send` — Send chat message `{ message: string }` (Room members only)
+* `reaction:send` — Send floating reaction `{ emoji: string }` (Room members only)
 
 ### Server → Client
 
@@ -181,6 +188,10 @@ Example Response (`HTTP 200 OK`):
 * `room:user-joined` — Emitted when a new user joins
 * `room:user-left` — Emitted when a user leaves or disconnects
 * `media:state` — Emitted to room members on media mutation and upon late join
+* `chat:message` — Broadcasts new chat message to room members
+* `chat:history` — Emitted to joining socket with bounded room chat history (max 100)
+* `reaction:event` — Broadcasts ephemeral floating reaction to room members
+* `presence:state` — Emitted to room members on join, leave, or disconnect containing active connected users list
 
 ## Permission & Security Model
 
@@ -189,9 +200,11 @@ Example Response (`HTTP 200 OK`):
    * `host`: Has `ROOM_MANAGE`, `ROOM_LOCK`, `HOST_TRANSFER`, `MEDIA_CONTROL`.
    * `member`: Standard room member without administrative or media control capabilities.
 3. **Atomic Host Transfer**: Exactly one host exists per room. Upon transfer, old host loses host privileges immediately and new host receives host privileges immediately. Target must be an active connected user in the same room.
-4. **Anti-Spoofing & Context Validation**: Client-supplied role, hostId, or actingUserId payloads are strictly ignored. All socket authorization uses trusted `socket.data.roomId` and `socket.data.userId`.
-5. **Room Isolation**: Users from Room A cannot inspect, manage, transfer host, lock/unlock, or alter media in Room B.
-6. **Failure Atomicity**: Unauthorized operations fail cleanly with appropriate HTTP 403 / socket error codes without side-effects (room state, permissions, and media version remain unchanged).
+4. **Anti-Spoofing & Context Validation**: Client-supplied role, hostId, actingUserId, displayName, or roomId payloads in socket events (`chat:send`, `reaction:send`, `media:*`, `room:*`) are strictly ignored. All socket authorization uses trusted `socket.data.roomId` and `socket.data.userId`.
+5. **Chat Validation & Sanitization**: Chat messages must be non-empty strings (max 500 characters). HTML tags (`<`, `>`, `"`, `'`, `&`) are sanitized before broadcasting/storage.
+6. **Reaction Whitelisting**: Reactions are strictly validated against an allowed set (`👍`, `❤️`, `😂`, `😮`, `😢`, `🔥`, `🎉`, `👏`). Invalid or arbitrary string payloads are rejected with `INVALID_REACTION`.
+7. **Room Isolation**: Users from Room A cannot inspect, manage, transfer host, lock/unlock, alter media, send chat, trigger reactions, or receive presence updates from Room B.
+8. **Failure Atomicity**: Unauthorized or invalid operations fail cleanly with appropriate HTTP 403 / socket error codes without side-effects (room state, permissions, media version, and chat history remain unchanged).
 
 ## Key Rules & Synchronization Rules Engine
 
@@ -202,14 +215,16 @@ Example Response (`HTTP 200 OK`):
 5. **Server-Authoritative Time**: Playback `position` and `updatedAt` are anchored by the server. When `status === "playing"`, effective position is computed as `position + ((serverNow - updatedAt) / 1000) * playbackRate`.
 6. **Playback Rates**: Supported rates are `0.25`, `0.5`, `0.75`, `1`, `1.25`, `1.5`, `1.75`, `2`.
 7. **Versioning**: Every successful media mutation increments `version` by 1. Failed operations do not increment `version`.
-8. **Late Join Synchronization**: Upon joining a room (`room:join`), late-joining clients immediately receive the current authoritative `media:state`.
-9. **Room Isolation**: Media state, socket events, and permissions are strictly isolated per room.
+8. **Late Join Synchronization**: Upon joining a room (`room:join`), late-joining clients immediately receive current authoritative `media:state` and bounded `chat:history`.
+9. **Ephemeral Floating Reactions**: Reactions are real-time room events (`reaction:event`) that are not persisted for late joiners.
+10. **Server-Authoritative Presence**: Presence state (`presence:state`) is computed from active connected room members and broadcasted on room join, leave, and disconnect.
+11. **Room Isolation**: Media state, chat messages, reactions, presence state, socket events, and permissions are strictly isolated per room.
 
 ## Deferred Scope (Future Phases)
 
-* **B5**: Chat, reactions, presence system
 * **B6**: WebRTC signaling & local-file streaming
 * **B7**: Reconnection handling & room cleanup timers
 * **B8**: Production audit & deployment readiness
+
 
 

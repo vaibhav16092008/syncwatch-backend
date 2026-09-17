@@ -1,6 +1,9 @@
 import roomService from '../services/room.service.js';
 import mediaService from '../services/media.service.js';
+import chatService from '../services/chat.service.js';
+import presenceService from '../services/presence.service.js';
 import logger from '../utils/logger.js';
+import { AppError, ERROR_CODES } from '../utils/errors.js';
 
 export const registerRoomHandlers = (io, socket) => {
   // room:join
@@ -17,6 +20,14 @@ export const registerRoomHandlers = (io, socket) => {
       // Late Join Synchronization: send current authoritative media state to joining socket
       const mediaState = mediaService.getMediaState(result.room.id);
       socket.emit('media:state', mediaState);
+
+      // Late Join Synchronization: send chat history to joining socket
+      const chatHistory = chatService.getChatHistory(result.room.id, result.user.id);
+      socket.emit('chat:history', { messages: chatHistory });
+
+      // Presence state update broadcast
+      const presenceUsers = presenceService.getPresenceState(result.room.id);
+      io.to(result.room.id).emit('presence:state', { users: presenceUsers });
 
       // Broadcast to room
       socket.to(result.room.id).emit('room:user-joined', { user: result.user });
@@ -62,6 +73,9 @@ export const registerRoomHandlers = (io, socket) => {
       if (updatedState) {
         socket.to(roomId).emit('room:user-left', { userId });
         io.to(roomId).emit('room:state', updatedState);
+
+        const presenceUsers = presenceService.getPresenceState(roomId);
+        io.to(roomId).emit('presence:state', { users: presenceUsers });
       }
 
       cb({ success: true });
@@ -176,6 +190,9 @@ export const registerRoomHandlers = (io, socket) => {
         const { userId, room } = result;
         io.to(room.id).emit('room:user-left', { userId });
         io.to(room.id).emit('room:state', room);
+
+        const presenceUsers = presenceService.getPresenceState(room.id);
+        io.to(room.id).emit('presence:state', { users: presenceUsers });
       }
     } catch (error) {
       logger.error('Disconnect error', { socketId: socket.id, error: error.message });

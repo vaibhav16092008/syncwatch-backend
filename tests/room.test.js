@@ -21,13 +21,7 @@ describe('Phase B2 — Room Management Tests', () => {
   });
 
   after(async () => {
-    if (httpServer.listening) {
-      await new Promise((resolve) => {
-        io.close(() => {
-          httpServer.close(resolve);
-        });
-      });
-    }
+    // Keep server active for subsequent test files sharing singleton httpServer
   });
 
   beforeEach(() => {
@@ -37,7 +31,8 @@ describe('Phase B2 — Room Management Tests', () => {
   const createClient = () => {
     return ioClient(`http://localhost:${port}`, {
       transports: ['websocket'],
-      forceNew: true
+      forceNew: true,
+      reconnection: false
     });
   };
 
