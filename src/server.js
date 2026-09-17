@@ -11,11 +11,23 @@ import mediaRoutes from './routes/media.routes.js';
 
 const app = express();
 
+if (config.TRUST_PROXY) {
+  app.set('trust proxy', 1);
+}
+
+// Lightweight HTTP Security Headers Middleware
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+
 // Basic Express Middleware
 app.use(cors({
   origin: config.CLIENT_URL
 }));
-app.use(express.json());
+app.use(express.json({ limit: '10kb' }));
 
 // Apply Rate Limiter to API routes
 app.use('/api', rateLimiterMiddleware());
@@ -40,7 +52,7 @@ app.use((req, res, next) => {
 // Centralized Error Handling Middleware
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
-  const statusCode = err.statusCode || 500;
+  const statusCode = err.statusCode || err.status || 500;
   const errorCode = err.code || ERROR_CODES.INTERNAL_ERROR;
   const message = (statusCode === 500 && config.NODE_ENV === 'production')
     ? 'Internal server error'
@@ -74,15 +86,24 @@ if (!isTestMode) {
 }
 
 // Graceful Shutdown
-export const gracefulShutdown = (done) => {
+export const gracefulShutdown = (done = () => {}) => {
   logger.info('Received shutdown signal. Closing server cleanly...');
-  io.close(() => {
-    logger.info('Socket.io connections closed.');
-    httpServer.close(() => {
-      logger.info('HTTP server closed.');
-      if (done) done();
+  try {
+    io.close(() => {
+      logger.info('Socket.io connections closed.');
+      if (httpServer.listening) {
+        httpServer.close(() => {
+          logger.info('HTTP server closed.');
+          if (typeof done === 'function') done();
+        });
+      } else {
+        if (typeof done === 'function') done();
+      }
     });
-  });
+  } catch (err) {
+    logger.error('Error during shutdown', { error: err.message });
+    if (typeof done === 'function') done(err);
+  }
 };
 
 process.on('SIGINT', () => gracefulShutdown(() => process.exit(0)));

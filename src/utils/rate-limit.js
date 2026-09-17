@@ -35,9 +35,21 @@ export class InMemoryRateLimiter {
 
 export const defaultRateLimiter = new InMemoryRateLimiter();
 
+export const getClientIp = (req) => {
+  if (req.app && typeof req.app.get === 'function' && req.app.get('trust proxy')) {
+    return req.ip || req.socket?.remoteAddress || 'unknown';
+  }
+  const rawForwarded = req.headers ? req.headers['x-forwarded-for'] : null;
+  if (typeof rawForwarded === 'string' && rawForwarded.trim().length > 0) {
+    const firstIp = rawForwarded.split(',')[0].trim();
+    if (firstIp) return firstIp;
+  }
+  return req.ip || req.socket?.remoteAddress || 'unknown';
+};
+
 export const rateLimiterMiddleware = (limiter = defaultRateLimiter) => {
   return (req, res, next) => {
-    const key = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+    const key = getClientIp(req);
     const result = limiter.isAllowed(key);
 
     res.setHeader('X-RateLimit-Limit', limiter.maxRequests);

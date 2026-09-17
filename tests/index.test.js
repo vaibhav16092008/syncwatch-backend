@@ -13,6 +13,7 @@ import './reaction.test.js';
 import './presence.test.js';
 import './webrtc.test.js';
 import './reconnection.test.js';
+import './hardening.test.js';
 
 after(async () => {
   if (httpServer.listening) {
