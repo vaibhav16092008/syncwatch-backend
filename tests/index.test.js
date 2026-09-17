@@ -11,6 +11,7 @@ import './permission.test.js';
 import './chat.test.js';
 import './reaction.test.js';
 import './presence.test.js';
+import './webrtc.test.js';
 
 after(async () => {
   if (httpServer.listening) {

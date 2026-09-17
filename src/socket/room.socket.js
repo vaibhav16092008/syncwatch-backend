@@ -2,6 +2,7 @@ import roomService from '../services/room.service.js';
 import mediaService from '../services/media.service.js';
 import chatService from '../services/chat.service.js';
 import presenceService from '../services/presence.service.js';
+import webrtcService from '../services/webrtc.service.js';
 import logger from '../utils/logger.js';
 import { AppError, ERROR_CODES } from '../utils/errors.js';
 
@@ -71,7 +72,9 @@ export const registerRoomHandlers = (io, socket) => {
       delete socket.data.userId;
 
       if (updatedState) {
+        webrtcService.removePeerFromRoom({ roomId, userId });
         socket.to(roomId).emit('room:user-left', { userId });
+        socket.to(roomId).emit('webrtc:peer-left', { userId });
         io.to(roomId).emit('room:state', updatedState);
 
         const presenceUsers = presenceService.getPresenceState(roomId);
@@ -188,7 +191,9 @@ export const registerRoomHandlers = (io, socket) => {
       const result = roomService.handleDisconnect({ socketId: socket.id });
       if (result) {
         const { userId, room } = result;
+        webrtcService.removePeerFromRoom({ roomId: room.id, userId });
         io.to(room.id).emit('room:user-left', { userId });
+        io.to(room.id).emit('webrtc:peer-left', { userId });
         io.to(room.id).emit('room:state', room);
 
         const presenceUsers = presenceService.getPresenceState(room.id);
